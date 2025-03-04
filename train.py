@@ -30,8 +30,9 @@ from pytorch_forecasting.data import GroupNormalizer
 from pytorch_forecasting.metrics import RMSE, MAE
 from pytorch_forecasting.data import NaNLabelEncoder
 from pytorch_forecasting.models import TemporalFusionTransformer
+from sklearn.preprocessing import StandardScaler
 
-logger = TensorBoardLogger("tb_logs", name="China-stock")
+logger = TensorBoardLogger("tb_logs", name="thetadata")
 
 # Make True to select a subsample. Helps with faster training.
 TRAIN_SUBSAMPLE = False
@@ -81,6 +82,15 @@ def load_weights(model, weight_path):
     model.load_state_dict(state_dict)
 
 
+def normalization(df):
+    #train_df = train_df.apply(lambda x: winsorize(x, limits=[0.05, 0.05]))
+    scaler = StandardScaler()
+
+    norm_df=df[['Garch_Vlty',"Hist_Vlty","atm_plus_0spread_iv_CALL","atm_plus_0spread_iv_PUT"]].applymap(lambda x: np.log(x+1))
+    norm_df['date'] = df['date']
+    norm_df['time'] = df['time']
+    norm_df['pct_chg'] = scaler.fit_transform(train_df[['pct_chg']])
+    return norm_df
 
     
 from collections import namedtuple
@@ -111,6 +121,9 @@ train_df = pd.read_parquet(folder+"thetadata-spx-features.parquet")
 #train_df=train_df.loc[(train_df.index.get_level_values(1) == '000001.SZ') | (train_df.index.get_level_values(1) == '000002.SZ')] 
 train_df.reset_index(inplace=True)
 train_df['pct_chg'] = train_df.groupby("date")['Price'].pct_change()
+
+train_df = normalization(train_df)
+
 train_df["minute_of_day"] = pd.to_datetime(train_df["time"], format="%H:%M:%S").dt.hour * 60 + pd.to_datetime(train_df["time"], format="%H:%M:%S").dt.minute
 #time_idx must be within date
 train_df.dropna(inplace=True)
@@ -134,10 +147,10 @@ feat_config = FeatureConfig(
 )
 
 max_prediction_length = 10
-min_prediction_length = 5
-max_encoder_length = 40
+min_prediction_length = 10
+max_encoder_length = 30
 min_encoder_length = 30
-batch_size = 1024  # set this to a value which your GPU can handle
+batch_size = 512  # set this to a value which your GPU can handle
 train_model = True # Set this to True to train model. Else will load saved models ! Warning! Training on full dataset takes 3-6 hours
 tag = "SPX-minute-TFT"
 metric_record = []
@@ -190,7 +203,7 @@ training = TimeSeriesDataSet(
 )
 
 # Defining the validation dataset with the same parameters as training
-validation = TimeSeriesDataSet.from_dataset(training, pd.concat([val_df]).reset_index(drop=True), stop_randomization=True)
+validation = TimeSeriesDataSet.from_dataset(training, pd.concat([val_df]).reset_index(drop=True), predict=True, stop_randomization=True)
 # Defining the test dataset with the same parameters as training
 #test = TimeSeriesDataSet.from_dataset(training, pd.concat([hist_df, test_df]).reset_index(drop=True), stop_randomization=True)
 
@@ -199,8 +212,8 @@ training = TimeSeriesDataSet.from_dataset(training, train_df.reset_index(drop=Tr
 
 # Making the dataloaders
 # num_workers can be increased in linux to speed-up training
-train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
-val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
+train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=8)
+val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=8)
 
 
 #cardinality = [len(training.categorical_encoders[c].classes_) for c in training.categoricals]
@@ -210,16 +223,16 @@ val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, nu
 #}
 
 model_params = {
-    "hidden_size": 128,
-    "lstm_layers": 2,
-    "attention_head_size": 4,
-    #"hidden_continuous_size": 128,
+    "hidden_size": 512,
+    "lstm_layers": 4,
+    "attention_head_size": 8,
+    "hidden_continuous_size": 512,
     #"dropout": 0.1,
     #"embedding_sizes": embedding_sizes
     #"embedding_sizes":{}
 }
 other_params = dict(
-    learning_rate=1e-2,
+    learning_rate=5e-3,
     optimizer="adam",
     loss=RMSE(),
     logging_metrics=[RMSE(), MAE()],
@@ -240,9 +253,9 @@ if train_model:
         logger=logger,
         accelerator="cuda",
         min_epochs=1,
-        max_epochs=20,
+        max_epochs=5,
         callbacks=[
-            EarlyStopping(monitor="val_loss", patience=10 if TRAIN_SUBSAMPLE else 4*3),
+            #EarlyStopping(monitor="val_loss", patience=10 if TRAIN_SUBSAMPLE else 4*3),
             ModelCheckpoint(
                 monitor="val_loss", save_last=True, mode="min", auto_insert_metric_name=True
             ),
